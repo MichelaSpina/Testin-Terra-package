@@ -1,0 +1,250 @@
+# Analisi raster e dati fisiologici (Bromelie / Orchidee)
+# Script generato da R Markdown -> script R eseguibile in RStudio
+# Autore: MichelaSpina
+# Data: 2026-01-15
+
+
+# install.packages(c("terra", "viridis", "readr", "dplyr", "ggplot2", "knitr", "rmarkdown", "sf"))
+install.packages("terra")
+install.packages("viridis")
+install.packages("readr")
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("knitr")
+
+# Carica pacchetti
+library(terra)
+library(viridis)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Impostazioni iniziali
+setwd("C:/Users/Utente/OneDrive - Università di Napoli Federico II/Desktop/DATI X RSTUDIO MACHIN")
+
+# Nomi file
+MachinSentinel <- rast("Sentinel-2_20250122.tif")
+
+Brom.data <- read_csv("Bromelie datos.csv")
+Orch.data <- read_csv("Orchidea datos.csv")
+
+# Mappa bande Sentinel 
+band_map_sentinel <- list(blue = 2, green = 3, red = 4, nir = 8)
+
+# Estrazione bande Sentinel
+red   <- MachinSentinel[[band_map_sentinel$red]]
+green <- MachinSentinel[[band_map_sentinel$green]]
+blue  <- MachinSentinel[[band_map_sentinel$blue]]
+nir   <- MachinSentinel[[band_map_sentinel$nir]]
+
+# Combinazione delle bande RGB
+rgb_stack <- c(red, green, blue)
+
+# Plot True Color (RGB)
+plotRGB(rgb_stack, r = 1, g = 2, b = 3, main = "True Color Sentinel-2", stretch = "lin")
+
+dev.off()
+
+# Visualizzare l'extent dell'immagine e controllo della classe Raster
+list(MachinSentinel)
+#extent: 449340, 465340, 489030, 500030  (xmin, xmax, ymin, ymax)
+#nlyr:10
+
+# Definiamo un extent spostato con focus sul Cerro Machìn
+extent_cropped <- extent_cropped <- ext(c(xmin = 455000, xmax = 460000, ymin = 493000, ymax = 499000))
+
+# Eseguiamo il crop
+Machin_crop <- crop(MachinSentinel, extent_cropped)
+
+# Estrazione delle bande dal raster croppato
+red_crop   <- Machin_crop[[band_map_sentinel$red]]
+green_crop <- Machin_crop[[band_map_sentinel$green]]
+blue_crop  <- Machin_crop[[band_map_sentinel$blue]]
+nir_crop  <- Machin_crop[[band_map_sentinel$nir]]
+
+# calcola max assoluto per decidere se scalare
+max_vals <- sapply(list(red_crop, green_crop, blue_crop, nir_crop), function(x) global(x, fun = "max", na.rm = TRUE)[1])
+min_vals <- sapply(list(red_crop, green_crop, blue_crop, nir_crop), function(x) global(x, fun = "min", na.rm = TRUE)[1])
+max_vals; min_vals
+
+# funzione che scala automaticamente se necessario
+scale_band_if_needed <- function(r) {
+  m <- global(r, "max", na.rm = TRUE)[1]
+  if (!is.na(m) && m > 1.5) {
+    message("Normalizzo banda (divido per 10000). Max = ", round(m,1))
+    return(r / 10000)
+  } else {
+    message("Banda già in scala 0..1. Max = ", round(m,3))
+    return(r)
+  }
+}
+
+red_crop   <- scale_band_if_needed(red_crop)
+green_crop <- scale_band_if_needed(green_crop)
+blue_crop  <- scale_band_if_needed(blue_crop)
+nir_crop   <- scale_band_if_needed(nir_crop)
+
+# Combinazione delle bande RGB
+rgb_stack_crop <- c(red_crop, green_crop, blue_crop)
+
+# Plot RGB dell'area ritagliata
+plotRGB(rgb_stack_crop, r = 1, g = 2, b = 3, main = "RGB Sentinel-2 Cropped", stretch = "lin")
+
+# Calcolo indici vegetazionali
+ndvi  <- (nir_crop - red_crop) / (nir_crop + red_crop); names(ndvi) <- "NDVI"
+L     <- 0.5
+savi  <- ((nir_crop - red_crop) / (nir_crop + red_crop + L)) * (1 + L); names(savi) <- "SAVI"
+msavi <- (2 * nir_crop + 1 - sqrt((2 * nir_crop + 1)^2 - 8 * (nir_crop - red_crop))) / 2; names(msavi) <- "MSAVI"
+gci   <- (nir_crop / green_crop) - 1; names(gci) <- "GCI"
+evi   <- 2.5 * ((nir_crop - red_crop) / (nir_crop + 6 * red_crop - 7.5 * blue_crop + 1)); names(evi) <- "EVI"
+lai   <- 3.618 * ndvi - 0.118; names(lai) <- "LAI"
+
+# Commento indici all'interno del cratere
+#Normalized Difference Vegetation Index
+plot(ndvi, main = "NDVI")
+ndvi     #NDVI varia da -0.01 a 0.73.
+         #gran parte mostra vegetazione moderata, con valori minimi in corrispondenza di rocce e campi fumarolici
+summary(ndvi) 
+         #Quasi zero → indica rocce, suolo nudo o piccole zone fumaroliche nel cratere.
+         #media: 0.576 -> moderatamente vegetato
+         # Nota: NDVI vicino a 0 indica suolo/rocce; valori >0.5 indicano vegetazione discreta/densa.
+
+# Soil Adjusted Vegetation Index (SAVI)
+plot(savi, main = "SAVI")
+savi    #SAVI varia da -0.02 a 1.09. 
+        #Conferma NDVI, ma corregge l'effetto del suolo nelle zone con poca vegetazione.
+summary(savi)
+        #media: 0.880678 conferma una vegetazione generalmente vigorosa nel cratere
+        #3°Qu. e Max indicano zone con valori molto alti, indicando vegetazione molto densa
+
+# Modified Soil Adjusted Vegetation Index (MSAVI)
+plot(msavi, main = "MSAVI")
+msavi   #Corregge ulteriormente il suolo rispetto a SAVI.
+summary(msavi)        
+        #conferma i pattern già visti con NDVI e SAVI, ma è meno influenzato dal suolo nudo, quindi i valori medi mostrano più chiaramente la vegetazione reale.
+
+# Green Chlorophyll Index (GCI)
+plot(gci, main = "GCI")
+gci     #varia da -0.028 a 3.86. Indica la quantità di clorofilla nelle foglie.
+summary(gci) 
+        #La maggior parte dei pixel ha valori tra 1.7 e 1.95, indicando vegetazione moderatamente sana, con buona presenza di clorofilla.
+
+#Enhanced Vegetation Index
+plot(evi, main = "EVI")
+evi
+summary(evi)
+head(evi)
+#"L'EVI medio (≈ 0.60) indica una copertura vegetale su scala moderata‑alta nell'area del Cerro 
+#variabilità spaziale contenuta (CV ≈ 0.17)
+
+
+
+#Leaf Area Index
+plot(lai, main = "LAI")
+lai     #LAI varia da -0.17 a 2.51. Misura la densità del fogliame.
+
+#plot di tutti i gli indici
+indices_stack <- c(ndvi, savi, msavi, gci, evi, lai)
+plot(indices_stack)
+
+# Estrai valori validi
+evi_vals <- values(evi)
+evi_vals <- na.omit(evi_vals)  # più semplice di evi_vals[!is.na(evi_vals)]
+# Media, SD e CV
+evi_mean <- mean(evi_vals)
+evi_sd   <- sd(evi_vals)
+evi_cv   <- ifelse(evi_mean == 0, NA, evi_sd / evi_mean)
+#valori
+evi_mean
+evi_sd
+evi_cv
+# Shannon EVI
+h <- hist(evi_vals, breaks = 50, plot = FALSE)
+p <- h$counts / sum(h$counts)
+shannon_evi <- -sum(p[p > 0] * log(p[p > 0]))
+
+cat("Shannon EVI:", shannon_evi, "\nEVI mean:", evi_mean, 
+    "EVI sd:", evi_sd, "EVI CV:", evi_cv, "\n")
+
+
+
+# Esplorazione e regressioni con .csv data
+# Funzione per trovare colonna corrispondente
+
+head(Brom.data)
+head(Orch.data)
+
+
+find_col <- function(df, patterns) {
+  p <- names(df)[tolower(names(df)) %in% tolower(patterns)]
+  if (length(p) > 0) p[1] else NULL
+}
+
+
+if (!is.null(Brom.data)) {
+  stoma_candidates <- c("mean.stoma", "mean_stoma", "meanstoma", "stoma", "mean_stoma")
+  soil_candidates  <- c("mean_t_soil", "mean_T_soil", "meantsoil", "t_environment", "tenvironment")
+  b_stoma_col <- find_col(Brom.data, stoma_candidates)
+  b_soil_col  <- find_col(Brom.data, soil_candidates)
+  cat("Bromelie - stomacol:", b_stoma_col, " soilcol:", b_soil_col, "\n")
+  
+  if (!is.null(b_stoma_col)) {
+    p1 <- ggplot(Brom.data, aes_string(x = b_stoma_col)) +
+      geom_histogram(bins = 10, fill = "green", color = "black") +
+      theme_minimal() +
+      labs(title = "Bromelie: distribuzione densità stomatica", x = "Densità stomatica media", y = "Count")
+    print(p1)
+  } else message("Colonna stomatica Bromelie non trovata; controlla i nomi delle colonne.")
+  
+  if (!is.null(b_stoma_col) && !is.null(b_soil_col)) {
+    p3 <- ggplot(Brom.data, aes_string(x = b_soil_col, y = b_stoma_col)) +
+      geom_point(color = "blue", size = 3) +
+      geom_smooth(method = "lm", color = "red", se = TRUE) +
+      theme_minimal() +
+      labs(title = "Bromelie: stomi vs temperatura del suolo", x = "Temperatura del suolo (°C)", y = "Densità stomatica media")
+    print(p3)
+    mod_brom <- lm(as.formula(paste(b_stoma_col, "~", b_soil_col)), data = Brom.data)
+    cat("Summary mod_brom:\n"); print(summary(mod_brom))
+  } else message("Impossibile calcolare regressione Bromelie: colonne mancanti.")
+}
+
+if (!is.null(Orch.data)) {
+  stoma_candidates <- c("mean.stoma", "mean_stoma", "meanstoma", "stoma", "mean_stoma")
+  soil_candidates  <- c("mean_t_soil", "mean_T_soil", "meantsoil", "t_environment", "tenvironment")
+  o_stoma_col <- find_col(Orch.data, stoma_candidates)
+  o_soil_col  <- find_col(Orch.data, soil_candidates)
+  cat("Orchidee - stomacol:", o_stoma_col, " soilcol:", o_soil_col, "\n")
+  
+  if (!is.null(o_stoma_col)) {
+    p2 <- ggplot(Orch.data, aes_string(x = o_stoma_col)) +
+      geom_histogram(bins = 10, fill = "red", color = "black") +
+      theme_minimal() +
+      labs(title = "Orchidee: distribuzione densità stomatica", x = "Densità stomatica media", y = "Count")
+    print(p2)
+  } else message("Colonna stomatica Orchidee non trovata; controlla i nomi delle colonne.")
+  
+  if (!is.null(o_stoma_col) && !is.null(o_soil_col)) {
+    p4 <- ggplot(Orch.data, aes_string(x = o_soil_col, y = o_stoma_col)) +
+      geom_point(color = "purple", size = 3) +
+      geom_smooth(method = "lm", color = "orange", se = TRUE) +
+      theme_minimal() +
+      labs(title = "Orchidee: stomi vs temperatura del suolo", x = "Temperatura del suolo (°C)", y = "Densità stomatica media")
+    print(p4)
+    mod_orch <- lm(as.formula(paste(o_stoma_col, "~", o_soil_col)), data = Orch.data)
+    cat("Summary mod_orch:\n"); print(summary(mod_orch))
+  } else message("Impossibile calcolare regressione Orchidee: colonne mancanti.")
+}
+
+# Salvataggio
+# writeRaster(ndvi, "NDVI.tif", overwrite = TRUE)
+# writeRaster(evi, "EVI.tif", overwrite = TRUE)
+# writeRaster(lai, "LAI.tif", overwrite = TRUE)
+# if (exists("mod_brom")) saveRDS(mod_brom, "mod_brom.rds")
+# if (exists("mod_orch")) saveRDS(mod_orch, "mod_orch.rds")
+
+# Session info
+print(sessionInfo())
+
+# Fine script
+cat("Script completato.\n")
